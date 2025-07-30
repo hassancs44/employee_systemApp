@@ -1,20 +1,35 @@
-from pathlib import Path
-import os
 import streamlit as st
-import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime
+import os
 
-# --------------------------------------------
-# 1) حدد BASE_DIR → يصل إلى مجلّد employee_system/
-# --------------------------------------------
-BASE_DIR     = Path(__file__).resolve().parent.parent.parent
-REPORTS_XLS  = BASE_DIR / "reports_data.xlsx"
-REPATT_DIR   = BASE_DIR / "reports_attachments"
+# —————————————————————————————————————————
+# 1) مصادقة Google Sheets API عبر Streamlit Secrets
+# —————————————————————————————————————————
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
+]
+creds = Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"],
+    scopes=SCOPES
+)
+gc   = gspread.authorize(creds)
 
-# 2) تأكد من وجود مجلّد مرفقات البلاغات المشترك
-REPATT_DIR.mkdir(parents=True, exist_ok=True)
+SPREADSHEET_ID = st.secrets["gcp_service_account"]["spreadsheet_id"]
+sh             = gc.open_by_key(SPREADSHEET_ID)
+ws_reports     = sh.worksheet("Reports")   # ورقة بلاغات الـIT
 
-# إعداد الصفحة
+# —————————————————————————————————————————
+# 2) تجهيز مجلّد المرفقات محليًا (اختياري)
+# —————————————————————————————————————————
+ATTACH_DIR = "reports_attachments"
+os.makedirs(ATTACH_DIR, exist_ok=True)
+
+# —————————————————————————————————————————
+# 3) إعداد واجهة Streamlit
+# —————————————————————————————————————————
 st.set_page_config(page_title="إرسال بلاغ IT", layout="centered")
 st.markdown(
     "<h1 style='text-align:center; color:#006db3;'>نموذج إرسال بلاغ لقسم تقنية المعلومات</h1>",
@@ -36,37 +51,28 @@ department = st.text_input("اسم القسم")
 issue_desc = st.text_area("تفاصيل البلاغ")
 attachment = st.file_uploader("إرفاق ملف (اختياري)", type=["png", "jpg", "pdf", "docx", "xlsx"])
 
-# عند النقر على زر الإرسال
+# —————————————————————————————————————————
+# 4) معالجة الإرسال
+# —————————————————————————————————————————
 if st.button("إرسال البلاغ"):
-    if not department or not issue_desc:
-        st.error("يرجى ملء جميع الحقول المطلوبة قبل الإرسال.")
+    if not (department and issue_desc):
+        st.error("🛑 يرجى ملء جميع الحقول المطلوبة قبل الإرسال.")
     else:
-        # حفظ المرفق في المجلد المشترك
+        # حفظ المرفق محليًا إذا وُجد
         filename = ""
-        if attachment is not None:
+        if attachment:
             ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{ts}_{attachment.name}"
-            path     = REPATT_DIR / filename
-            with open(path, "wb") as f:
+            with open(f"{ATTACH_DIR}/{filename}", "wb") as f:
                 f.write(attachment.getbuffer())
 
-        # قراءة أو إنشاء DataFrame
-        if REPORTS_XLS.exists():
-            df = pd.read_excel(REPORTS_XLS)
-        else:
-            df = pd.DataFrame(
-                columns=["timestamp", "hospital", "department", "description", "attachment"]
-            )
-
-        # إضافة السجل الجديد
-        new_report = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "hospital": hospital,
-            "department": department,
-            "description": issue_desc,
-            "attachment": filename
-        }
-        df = pd.concat([df, pd.DataFrame([new_report])], ignore_index=True)
-        df.to_excel(REPORTS_XLS, index=False)
+        # إضافة الصف إلى ورقة Reports في Google Sheets
+        ws_reports.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            hospital,
+            department,
+            issue_desc,
+            filename
+        ], value_input_option="USER_ENTERED")
 
         st.success("✅ تم إرسال البلاغ بنجاح.")
